@@ -40,27 +40,31 @@ Titan is a **multi-agent AI productivity system** that acts as your personal chi
 ---
 
 ## 🏗️ Architecture
-┌─────────────────────────────────────────────────────────┐
-│                    User (voice or text)                  │
-└─────────────────────┬───────────────────────────────────┘
-│
-┌─────────────────────▼───────────────────────────────────┐
-│           🧠 Titan Orchestrator                          │
-│              ADK + Gemini 2.5 Flash                      │
-│         Reads intent → Routes to right agent             │
-└──────┬──────────┬──────────┬──────────┬─────────────────┘
-│          │          │          │
-┌──────▼───┐ ┌───▼────┐ ┌───▼────┐ ┌───▼──────┐
-│ 📅       │ │ ✅     │ │ 📝     │ │ ⏰       │
-│ Planner  │ │ Task   │ │ Notes  │ │ Reminder │
-│ Agent    │ │ Agent  │ │ Agent  │ │ Agent    │
-└──────┬───┘ └───┬────┘ └───┬────┘ └───┬──────┘
-│         │          │          │
-┌──────▼─────────▼──────────▼──────────▼──────┐
-│  Google Calendar API  │  SQLite Database      │
-│  (Read & Write)       │  (Tasks/Notes/        │
-│                       │   Reminders)          │
-└───────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    U([👤 User - voice or text]) --> O
+
+    O[🧠 Titan Orchestrator\nADK + Gemini 2.5 Flash]
+
+    O -->|planning & calendar| P[📅 Planner Agent\nMorning briefing · Conflicts · Focus blocks]
+    O -->|tasks & deadlines| T[✅ Task Agent\nCreate · Update · Track]
+    O -->|saving information| N[📝 Notes Agent\nSave · Search · Categorize]
+    O -->|time-based alerts| R[⏰ Reminder Agent\nSet · List · Link to tasks]
+
+    P --> CAL[📆 Google Calendar API\nRead & Write real events]
+    P --> DB[(🗄️ SQLite Database\nTasks · Notes · Reminders)]
+    T --> DB
+    N --> DB
+    R --> DB
+
+    style O fill:#4285F4,color:#fff
+    style P fill:#8E44AD,color:#fff
+    style T fill:#27AE60,color:#fff
+    style N fill:#E67E22,color:#fff
+    style R fill:#E74C3C,color:#fff
+    style CAL fill:#34A853,color:#fff
+    style DB fill:#5D6D7E,color:#fff
+```
 
 ---
 
@@ -72,13 +76,13 @@ Titan: "Good morning! Focus Score: 8/10 🟢
     📅 Today's Calendar:
     → 10:00 AM — Team standup (30 mins)
     → 3:00 PM — [FOCUS] Hackathon submission
-    
+
     ✅ Tasks Due Today:
     → Finish hackathon submission (HIGH PRIORITY) ⚠️
-    
+
     ⏰ Reminders:
     → Review the deck at 5:00 PM
-    
+
     ⚠️ Conflict detected: Task due at 6PM but
        meetings run 4-6PM. Suggest moving focus
        block to 9-11AM. Want me to do that?"
@@ -86,8 +90,7 @@ Titan: "Good morning! Focus Score: 8/10 🟢
 **Step 2 — Smart Scheduling**
 You:   "Yes, move the focus block to 9am"
 Titan: "Done! Updated '[FOCUS] Hackathon Submission'
-to 9:00 AM - 11:00 AM in your Google Calendar.
-Check calendar.google.com to confirm ✅"
+to 9:00 AM - 11:00 AM in your Google Calendar ✅"
 
 **Step 3 — Task Linking**
 You:   "Add task: prepare demo video, due today 4pm"
@@ -97,28 +100,13 @@ Should I link this task to it for tracking?"
 
 ---
 
-## 🛠️ Tech Stack
-Agent Framework  →  Google Agent Development Kit (ADK)
-AI Model         →  Gemini 2.5 Flash (via Google AI Studio)
-Calendar         →  Google Calendar API + OAuth 2.0
-Database         →  SQLite (AlloyDB-ready for production)
-Deployment       →  Google Cloud Run (serverless)
-Language         →  Python 3.12
-
----
-
 ## 🤖 Agent Breakdown
 
 ### 🧠 Titan Orchestrator (Primary)
 The entry point. Reads user intent using Gemini and routes to the correct sub-agent. Never does the actual work — just coordinates.
 
 ### 📅 Planner Agent
-The most powerful agent. Handles:
-- Morning briefings (combines calendar + tasks + reminders)
-- Conflict detection between tasks and calendar events
-- Focus block suggestions and creation
-- Weekly pattern analysis
-- Task-calendar synchronization
+The most powerful agent. Handles morning briefings, conflict detection, focus block creation and updating, weekly pattern analysis, and task-calendar synchronization.
 
 ### ✅ Task Agent
 Full task lifecycle: create, update status, update due dates, list by priority/status.
@@ -131,32 +119,31 @@ Time-based reminders with optional task linking.
 
 ---
 
+## 🛠️ Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Agent Framework | Google Agent Development Kit (ADK) |
+| AI Model | Gemini 2.5 Flash |
+| Calendar | Google Calendar API + OAuth 2.0 |
+| Database | SQLite (AlloyDB-ready) |
+| Deployment | Google Cloud Run |
+| Language | Python 3.12 |
+
+---
+
 ## 🚀 Getting Started
-
-### Prerequisites
-- Google Cloud account
-- Google Calendar API credentials
-- Python 3.12+
-
-### Run Locally
 ```bash
 git clone https://github.com/HiteshSipani/titan-productivity.git
 cd titan-productivity
-
-# Create virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-
-# Set up environment
-cp .env.example .env
-# Edit .env with your API keys
-
-# Run
+# Add your .env file with API keys
 adk web .
 ```
 
-### Environment Variables
+**Environment Variables**
 ```bash
 GOOGLE_GENAI_USE_VERTEXAI=0
 GOOGLE_API_KEY=your_google_ai_studio_key
@@ -169,12 +156,11 @@ MODEL=gemini-2.5-flash
 
 **Program:** Google Cloud Gen AI Academy APAC 2026 — Cohort 1
 **Track:** Multi-Agent Productivity Assistant
-**Team:** Hitesh Sipani
 
 ### Requirements Checklist
-- ✅ Primary agent coordinating sub-agents (Orchestrator → 4 sub-agents)
-- ✅ Structured data storage (SQLite with tasks, notes, reminders tables)
-- ✅ Multiple MCP tool integrations (Google Calendar API)
+- ✅ Primary agent coordinating sub-agents
+- ✅ Structured data storage (SQLite)
+- ✅ Multiple tool integrations (Google Calendar API)
 - ✅ Multi-step workflows (morning briefing coordinates all agents)
 - ✅ API-based deployment (Google Cloud Run)
 
@@ -185,10 +171,9 @@ MODEL=gemini-2.5-flash
 - [ ] AlloyDB with vector search for semantic note retrieval
 - [ ] Multi-user OAuth login flow
 - [ ] Push notifications for reminders
-- [ ] Meeting preparation briefings (30 mins before events)
+- [ ] Meeting preparation briefings 30 mins before events
 - [ ] Weekly productivity pattern analysis
-- [ ] Mobile app (React Native)
-- [ ] Slack/Teams integration
+- [ ] Mobile app
 
 ---
 
