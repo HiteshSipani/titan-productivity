@@ -69,9 +69,33 @@ def get_db():
 
 import uuid
 
-def create_task(title: str, priority: str = "medium", due_date: str = None, description: str = None, project: str = None, estimated_minutes: int = 60) -> dict:
-    """Creates a new task. Priority: low/medium/high. due_date format: YYYY-MM-DD HH:MM"""
+def create_task(title: str, priority: str = "medium", due_date: str = None, description: str = None, project: str = None, estimated_minutes: int = 60, force_create: bool = False) -> dict:
+    """Creates a new task. Priority: low/medium/high. due_date format: YYYY-MM-DD HH:MM. Set force_create=True to skip duplicate check."""
     conn = get_db()
+    if not force_create:
+        words = [w for w in title.lower().split() if len(w) > 3]
+        similar = []
+        for word in words:
+            rows = conn.execute(
+                "SELECT * FROM tasks WHERE LOWER(title) LIKE ? AND status != 'done'",
+                (f"%{word}%",)
+            ).fetchall()
+            for row in rows:
+                d = dict(row)
+                if d['task_id'] not in [s['task_id'] for s in similar]:
+                    similar.append(d)
+        if similar:
+            conn.close()
+            options = []
+            for i, t in enumerate(similar[:3]):
+                options.append(f"SIMILAR_{chr(65+i)} — '{t['title']}' ({t['priority']} priority, due: {t['due_date'] or 'no date'})")
+            return {
+                "status": "duplicate_check",
+                "message": f"I found {len(similar)} similar task(s) already:",
+                "similar_tasks": similar[:3],
+                "options": options,
+                "instructions": "Reply with: " + " | ".join([f"SIMILAR_{chr(65+i)} to link/view" for i in range(len(similar[:3]))]) + " | NEW to create anyway | CANCEL to abort"
+            }
     task_id = str(uuid.uuid4())[:8]
     conn.execute("INSERT INTO tasks (task_id, title, description, priority, due_date, project, estimated_minutes) VALUES (?, ?, ?, ?, ?, ?, ?)", (task_id, title, description, priority, due_date, project, estimated_minutes))
     conn.commit()
@@ -104,14 +128,47 @@ def get_tasks_due_today() -> dict:
     conn.close()
     return {"status": "success", "date": today, "count": len(rows), "tasks": [dict(row) for row in rows]}
 
-def save_note(title: str, content: str, category: str = "general", tags: str = None) -> dict:
-    """Save a note with title, content, category and optional tags"""
+VALID_CATEGORIES = ["meeting", "task", "idea", "reference", "personal", "work", "learning", "general"]
+
+def infer_category(title: str, content: str) -> str:
+    """Infer note category from content."""
+    text = (title + " " + content).lower()
+    if any(w in text for w in ["meeting", "call", "discussed", "attendees", "agenda"]): return "meeting"
+    if any(w in text for w in ["learn", "study", "codelab", "course", "tutorial"]): return "learning"
+    if any(w in text for w in ["idea", "what if", "maybe", "concept", "brainstorm"]): return "idea"
+    if any(w in text for w in ["reference", "docs", "link", "resource", "guide"]): return "reference"
+    if any(w in text for w in ["personal", "family", "health", "gym", "finance"]): return "personal"
+    if any(w in text for w in ["work", "project", "client", "deadline", "team"]): return "work"
+    return "general"
+
+def save_note(title: str, content: str, category: str = None, tags: str = None, force_create: bool = False) -> dict:
+    """Save a note with title, content, optional category and tags. Set force_create=True to skip duplicate check."""
     conn = get_db()
+    if not force_create and title:
+        existing = conn.execute(
+            "SELECT * FROM notes WHERE LOWER(title) LIKE ? ORDER BY created_at DESC LIMIT 3",
+            (f"%{title.lower()[:15]}%",)
+        ).fetchall()
+        if existing:
+            similar = [dict(r) for r in existing]
+            conn.close()
+            options = []
+            for i, n in enumerate(similar[:3]):
+                options.append(f"SIMILAR_{chr(65+i)} — '{n['title']}' (saved {n['created_at'][:10]})")
+            return {
+                "status": "duplicate_check",
+                "message": f"I found {len(similar)} similar note(s):",
+                "similar_notes": similar[:3],
+                "options": options,
+                "instructions": "Reply with: " + " | ".join([f"SIMILAR_{chr(65+i)} to view existing" for i in range(len(similar[:3]))]) + " | NEW to save anyway | CANCEL to abort"
+            }
+    if not category or category not in VALID_CATEGORIES:
+        category = infer_category(title or "", content)
     note_id = str(uuid.uuid4())[:8]
     conn.execute("INSERT INTO notes (note_id, title, content, category, tags) VALUES (?, ?, ?, ?, ?)", (note_id, title, content, category, tags))
     conn.commit()
     conn.close()
-    return {"status": "success", "note_id": note_id, "message": f"Note '{title}' saved under {category}"}
+    return {"status": "success", "note_id": note_id, "message": f"Note '{title}' saved under category: {category}"}
 
 def search_notes(query: str) -> dict:
     """Search notes by keyword in title or content"""
@@ -326,12 +383,34 @@ def get_todays_calendar_events() -> dict:
     
     return {"status": "success", "date": now.strftime("%Y-%m-%d"), "events": formatted, "count": len(formatted)}
 
-def create_calendar_event(title: str, start_time: str, end_time: str, description: str = None) -> dict:
-    """Create an event in Google Calendar. Times format: YYYY-MM-DDTHH:MM:SS"""
+def create_calendar_event(title: str, start_time: str, end_time: str, description: str = None, is_tracking: bool = False) -> dict:
+    """Create an event in Google Calendar. Times format: YYYY-MM-DDTHH:MM:SS. Set is_tracking=True for past events added for tracking only."""
     service = get_calendar_service()
     if not service:
         return {"status": "not_authenticated", "message": "Calendar not connected. Please authenticate first."}
     
+    try:
+        event_start = datetime.fromisoformat(start_time.replace("Z", ""))
+        now = datetime.now()
+        if event_start < now and not is_tracking:
+            return {
+                "status": "past_time_error",
+                "requested_time": start_time,
+                "current_time": now.strftime("%Y-%m-%dT%H:%M:%S"),
+                "message": f"The time {event_start.strftime('%I:%M %p')} has already passed today.",
+                "options": [
+                    f"TOMORROW — Schedule for tomorrow at {event_start.strftime('%I:%M %p')}",
+                    "TRACKING — Add as a past tracking event (for reference only)",
+                    "DIFFERENT — Choose a different time"
+                ],
+                "instructions": "Reply with TOMORROW, TRACKING, or DIFFERENT to proceed"
+            }
+        if is_tracking:
+            title = f"[TRACKED] {title}"
+            description = (description or "") + "\n\n[Added for tracking — this event occurred in the past]"
+    except Exception as e:
+        pass
+
     event = {
         'summary': title,
         'description': description or '',
@@ -340,9 +419,10 @@ def create_calendar_event(title: str, start_time: str, end_time: str, descriptio
     }
     
     created = service.events().insert(calendarId='primary', body=event).execute()
+    tracking_note = " (added as tracking event)" if is_tracking else ""
     return {
         "status": "success",
-        "message": f"Event '{title}' created in Google Calendar",
+        "message": f"Event '{title}' created in Google Calendar{tracking_note}",
         "event_id": created.get('id'),
         "link": created.get('htmlLink')
     }
@@ -390,7 +470,7 @@ def get_free_slots_today() -> dict:
 # ============================================================
 
 def find_matching_tasks(keyword: str) -> dict:
-    """Search for tasks that might match a calendar event by keyword. Tries multiple keyword splits."""
+    """Search for tasks matching a calendar event keyword. Returns fixed label options to avoid numbering ambiguity."""
     conn = get_db()
     keywords = keyword.lower().split()
     all_matches = {}
@@ -408,10 +488,20 @@ def find_matching_tasks(keyword: str) -> dict:
     conn.close()
     matches = list(all_matches.values())
     matches.sort(key=lambda x: 0 if x['priority'] == 'high' else 1)
+    
+    options = []
+    for i, t in enumerate(matches[:3]):
+        label = chr(65 + i)
+        options.append(f"LINK {label} — link to '{t['title']}' ({t['priority']} priority)")
+    options.append("NEW — create a new task for this event")
+    options.append("SKIP — leave event unlinked")
+    
     return {
         "status": "success",
-        "matches": matches,
-        "count": len(matches)
+        "matches": matches[:3],
+        "count": len(matches),
+        "options": options,
+        "instructions": "Reply with: " + " | ".join([f"LINK {chr(65+i)}" for i in range(min(len(matches),3))]) + " | NEW | SKIP"
     }
 
 def link_event_to_task(task_id: str, calendar_event_id: str, calendar_event_title: str) -> dict:
@@ -534,15 +624,30 @@ planner_agent = Agent(
 
     TASK-CALENDAR LINKING (after creating any calendar event):
     - Call find_matching_tasks with keywords from the event title
-    - If matches found (count > 0):
-      Ask user: "I found [count] matching task(s): '[task title]'. 
-      Should I: (1) Link this event to it, (2) Create a new task, or (3) Leave unlinked?"
-    - If user says link → call link_event_to_task
-    - If user says new task → call create_task_from_event  
-    - If user says leave/no → confirm event was created, move on
-    - If no matches found:
-      Ask user: "No matching tasks found. Should I create a new task to track this?"
-    - If yes → call create_task_from_event
+    - Show the user the options EXACTLY as returned in the "options" field
+    - Wait for user response using the FIXED LABELS (LINK A, LINK B, NEW, SKIP)
+    - If user says "LINK A" → call link_event_to_task with the first match task_id
+    - If user says "LINK B" → call link_event_to_task with the second match task_id
+    - If user says "NEW" → call create_task_from_event
+    - If user says "SKIP" or "leave" or "no" → confirm event created, move on
+    - NEVER use numbered options (1/2/3) — always use the label system (LINK A/B/NEW/SKIP)
+    - If no matches found: ask "No matching tasks found. Reply NEW to create a tracking task or SKIP to leave unlinked"
+
+    CALENDAR PAST EVENT HANDLING:
+    - If create_calendar_event returns status "past_time_error":
+      Show the user the options EXACTLY as returned in "options" field
+      Wait for: TOMORROW / TRACKING / DIFFERENT
+      - TOMORROW: recalculate start/end times for next day, call create_calendar_event again
+      - TRACKING: call create_calendar_event again with is_tracking=True
+      - DIFFERENT: ask user what time they prefer
+
+    DUPLICATE HANDLING:
+    - If create_task or save_note returns status "duplicate_check":
+      Show similar items found and the options field EXACTLY
+      Wait for: SIMILAR_A / SIMILAR_B / NEW / CANCEL
+      - SIMILAR_A/B: inform user of existing item details, ask if they want to update it
+      - NEW: call the function again with force_create=True
+      - CANCEL: confirm cancelled, move on
 
     Be proactive. Speak like a brilliant chief of staff.
     Direct, smart, caring. Flag problems before user notices.
