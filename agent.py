@@ -227,6 +227,7 @@ task_agent = Agent(
     model=model_name,
     description="Manages tasks — create, update, list, and track to-dos and deadlines.",
     instruction="""
+    Today's date is {datetime.now().strftime("%A, %B %d, %Y")}. Current time is {datetime.now().strftime("%I:%M %p")} IST.
     You are the Task Manager for Titan Productivity.
     Use tools to create, update and retrieve tasks.
     Always confirm the action taken clearly.
@@ -241,6 +242,7 @@ notes_agent = Agent(
     model=model_name,
     description="Saves and retrieves notes, meeting notes, ideas, and reference material.",
     instruction="""
+    Today's date is {datetime.now().strftime("%A, %B %d, %Y")}. Current time is {datetime.now().strftime("%I:%M %p")} IST.
     You are the Notes Manager for Titan Productivity.
     Use tools to save and search notes.
     Suggest good categories: meeting, idea, reference, personal, work, learning.
@@ -254,6 +256,7 @@ reminder_agent = Agent(
     model=model_name,
     description="Creates and manages time-based reminders.",
     instruction="""
+    Today's date is {datetime.now().strftime("%A, %B %d, %Y")}. Current time is {datetime.now().strftime("%I:%M %p")} IST.
     You are the Reminder Manager for Titan Productivity.
     Use tools to create and retrieve reminders.
     Always confirm the exact time the reminder is set for.
@@ -387,20 +390,28 @@ def get_free_slots_today() -> dict:
 # ============================================================
 
 def find_matching_tasks(keyword: str) -> dict:
-    """Search for tasks that might match a calendar event by keyword."""
+    """Search for tasks that might match a calendar event by keyword. Tries multiple keyword splits."""
     conn = get_db()
-    rows = conn.execute(
-        """SELECT * FROM tasks 
-           WHERE (title LIKE ? OR description LIKE ?) 
-           AND status != 'done'
-           ORDER BY priority DESC""",
-        (f"%{keyword}%", f"%{keyword}%")
-    ).fetchall()
+    keywords = keyword.lower().split()
+    all_matches = {}
+    for kw in keywords:
+        if len(kw) > 3:
+            rows = conn.execute(
+                """SELECT * FROM tasks 
+                   WHERE (LOWER(title) LIKE ? OR LOWER(description) LIKE ?) 
+                   AND status != 'done'""",
+                (f"%{kw}%", f"%{kw}%")
+            ).fetchall()
+            for row in rows:
+                d = dict(row)
+                all_matches[d['task_id']] = d
     conn.close()
+    matches = list(all_matches.values())
+    matches.sort(key=lambda x: 0 if x['priority'] == 'high' else 1)
     return {
         "status": "success",
-        "matches": [dict(r) for r in rows],
-        "count": len(rows)
+        "matches": matches,
+        "count": len(matches)
     }
 
 def link_event_to_task(task_id: str, calendar_event_id: str, calendar_event_title: str) -> dict:
@@ -481,6 +492,8 @@ planner_agent = Agent(
     model=model_name,
     description="Creates intelligent day plans, detects conflicts, suggests focus blocks, and provides morning briefings.",
     instruction="""
+    Today's date is {datetime.now().strftime("%A, %B %d, %Y")}. Current time is {datetime.now().strftime("%I:%M %p")} IST.
+
     You are the Intelligence Planner for Titan — the most powerful agent.
 
     MORNING BRIEFING (triggered by "good morning" or "plan my day"):
@@ -557,6 +570,8 @@ root_agent = Agent(
     model=model_name,
     description="Titan — your personal AI productivity operating system.",
     instruction="""
+    Today\'s date is {datetime.now().strftime("%A, %B %d, %Y")}. Current time is {datetime.now().strftime("%I:%M %p")} IST.
+
     You are Titan, an intelligent personal productivity assistant.
     Calm, direct, smart, proactive — like a brilliant chief of staff.
 
@@ -566,12 +581,24 @@ root_agent = Agent(
     → reminder_agent: time-based reminders and alerts
     → planner_agent: day planning, morning briefing, conflicts, focus time, weekly review
 
+    WHEN ASKED "what can you do" or "how can you help" or similar capability questions:
+    ALWAYS respond with exactly this format:
+    "Here\'s what I can do for you:
+
+    📅 **Calendar & Planning** — Check your schedule, detect conflicts, create focus blocks, and give you a smart morning briefing
+    ✅ **Task Management** — Create, track, and update tasks with priorities and deadlines
+    📝 **Notes** — Save meeting notes, ideas, and reference material. Search them anytime
+    ⏰ **Reminders** — Set time-based reminders linked to your tasks
+    🧠 **Daily Intelligence** — Ask me \'Good morning Titan\' to get your focus score, today\'s agenda, and smart recommendations
+
+    Just tell me what you need — I\'ll handle the rest."
+
     IMPORTANT:
     - "good morning" or "plan my day" → planner_agent immediately
     - task + time mentioned → task first, then reminder
     - "what should I work on" → planner_agent
-    - Always be concise — max 3 sentences in your own responses
-    - Never say "I can't" — always find a way
+    - Never say "I can\'t" — always find a way
+    - Always greet user warmly on first message
 
     You are Titan. Make their day effortless.
     """,
