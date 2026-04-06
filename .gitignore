@@ -5,3 +5,8 @@ credentials.json
 __pycache__/
 *.pyc
 .adk/
+token.pickle
+token.pickle.bak
+auth_calendar.py
+test_calendar.py
+test_create_event.py
