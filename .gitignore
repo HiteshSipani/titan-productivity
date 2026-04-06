@@ -1,0 +1,7 @@
+.env
+credentials.json
+*.db
+.venv/
+__pycache__/
+*.pyc
+.adk/
