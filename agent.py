@@ -283,15 +283,25 @@ task_agent = Agent(
     name="task_agent",
     model=model_name,
     description="Manages tasks — create, update, list, and track to-dos and deadlines.",
-    instruction="""
-    Today's date is {datetime.now().strftime("%A, %B %d, %Y")}. Current time is {datetime.now().strftime("%I:%M %p")} IST.
+    instruction=f"""
+    Today is {datetime.now().strftime("%A, %B %d, %Y")}. Current time: {datetime.now().strftime("%I:%M %p")} IST.
     You are the Task Manager for Titan Productivity.
-    Use tools to create, update and retrieve tasks.
-    Always confirm the action taken clearly.
-    Mention the task_id when creating so user can reference it.
-    If a task has high priority, acknowledge it with urgency.
+
+    CRITICAL: When calling create_task, ALWAYS pass the task name as the 'title' parameter.
+    NEVER put the task name in 'description'. Description is optional extra detail only.
+    Example: "add task to finish report" → title="finish report", description=None
+
+    When create_task returns status "duplicate_check":
+    - Show the similar items clearly
+    - Show options EXACTLY using SIMILAR_A/NEW/CANCEL labels
+    - If SIMILAR_A → confirm existing task, do not create new
+    - If NEW → call create_task again with force_create=True
+    - If CANCEL → confirm cancelled
+
+    Always confirm action and mention task_id when creating.
+    If high priority, acknowledge with urgency.
     """,
-    tools=[create_task, get_tasks, update_task_status, get_tasks_due_today,update_task_due_date]
+    tools=[create_task, get_tasks, update_task_status, get_tasks_due_today, update_task_due_date]
 )
 
 notes_agent = Agent(
@@ -501,24 +511,26 @@ def find_matching_tasks(keyword: str) -> dict:
         "matches": matches[:3],
         "count": len(matches),
         "options": options,
-        "instructions": "Reply with: " + " | ".join([f"LINK {chr(65+i)}" for i in range(min(len(matches),3))]) + " | NEW | SKIP"
+        "instructions": ("Reply with: " + " | ".join([f"LINK {chr(65+i)}" for i in range(min(len(matches),3))]) + " | NEW | SKIP") if matches else "Reply with: NEW | SKIP"
     }
 
 def link_event_to_task(task_id: str, calendar_event_id: str, calendar_event_title: str) -> dict:
-    """Link a Google Calendar event to an existing task for tracking."""
+    """Link a Google Calendar event to an existing task. Stores the calendar event reference in the task so both are trackable together."""
     conn = get_db()
     conn.execute(
         """UPDATE tasks 
-           SET description = COALESCE(description, '') || ' [Calendar: ' || ? || ' | Event ID: ' || ? || ']'
+           SET description = COALESCE(description, '') || ' [Linked Calendar: ' || ? || ' | ID: ' || ? || ']'
            WHERE task_id = ?""",
         (calendar_event_title, calendar_event_id, task_id)
     )
     conn.commit()
+    task = conn.execute("SELECT title FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
     conn.close()
     return {
         "status": "success",
-        "message": f"Calendar event '{calendar_event_title}' linked to task {task_id}",
+        "message": f"Linked! The calendar event is now connected to your task. This means the calendar event ID is stored in the task — when you view the task you can see which calendar block is dedicated to it.",
         "task_id": task_id,
+        "task_title": dict(task)["title"] if task else "unknown",
         "event_id": calendar_event_id
     }
 
@@ -581,8 +593,16 @@ planner_agent = Agent(
     name="planner_agent",
     model=model_name,
     description="Creates intelligent day plans, detects conflicts, suggests focus blocks, and provides morning briefings.",
-    instruction="""
-    Today's date is {datetime.now().strftime("%A, %B %d, %Y")}. Current time is {datetime.now().strftime("%I:%M %p")} IST.
+    instruction=f"""
+    Today is {datetime.now().strftime("%A, %B %d, %Y")}. Current time: {datetime.now().strftime("%I:%M %p")} IST.
+    Tomorrow is {(datetime.now() + timedelta(days=1)).strftime("%A, %B %d, %Y")}.
+    Current year: {datetime.now().year}. Today's date string: {datetime.now().strftime("%Y-%m-%d")}.
+
+    CRITICAL DATE RULE: When creating calendar events:
+    - "today at 5pm" = {datetime.now().strftime("%Y-%m-%d")}T17:00:00
+    - "tomorrow at 9am" = {(datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")}T09:00:00
+    - NEVER use years 2023 or 2024 — always use {datetime.now().year}
+    - Always double-check the year before calling create_calendar_event
 
     You are the Intelligence Planner for Titan — the most powerful agent.
 
@@ -687,16 +707,22 @@ root_agent = Agent(
     → planner_agent: day planning, morning briefing, conflicts, focus time, weekly review
 
     WHEN ASKED "what can you do" or "how can you help" or similar capability questions:
-    ALWAYS respond with exactly this format:
-    "Here\'s what I can do for you:
+    ALWAYS respond with EXACTLY this text — each feature on its own line:
+    Hello! I am Titan, your personal AI productivity operating system.
 
-    📅 **Calendar & Planning** — Check your schedule, detect conflicts, create focus blocks, and give you a smart morning briefing
-    ✅ **Task Management** — Create, track, and update tasks with priorities and deadlines
-    📝 **Notes** — Save meeting notes, ideas, and reference material. Search them anytime
-    ⏰ **Reminders** — Set time-based reminders linked to your tasks
-    🧠 **Daily Intelligence** — Ask me \'Good morning Titan\' to get your focus score, today\'s agenda, and smart recommendations
+    Here is what I can do for you:
 
-    Just tell me what you need — I\'ll handle the rest."
+    📅 Calendar and Planning — Check your schedule, detect conflicts, create focus blocks, and give you a smart morning briefing
+
+    ✅ Task Management — Create, track, and update tasks with priorities and deadlines
+
+    📝 Notes — Save meeting notes, ideas, and reference material and search them anytime
+
+    ⏰ Reminders — Set time-based reminders linked to your tasks
+
+    🧠 Daily Intelligence — Say Good morning Titan to get your focus score, todays agenda, and smart recommendations
+
+    Just tell me what you need and I will handle the rest.
 
     IMPORTANT:
     - "good morning" or "plan my day" → planner_agent immediately
