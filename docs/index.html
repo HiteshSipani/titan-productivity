@@ -1306,11 +1306,14 @@ function addCMsg(text,who){
   msgs.appendChild(el);msgs.scrollTop=msgs.scrollHeight;
 }
 
+const STEPS=['Routing to agent...','Fetching tasks & calendar...','Checking relationships...','Analysing wellness...','Detecting conflicts...','Synthesising response...'];
 function addTyping(){
   const id='tp'+Date.now();const el=document.createElement('div');
   el.className='cm';el.id=id;
-  el.innerHTML=`<div class="cm-av t">T_</div><div><div class="tp"><div class="tp-d"></div><div class="tp-d"></div><div class="tp-d"></div></div></div>`;
+  el.innerHTML=`<div class="cm-av t">T_</div><div><div class="tp"><div class="tp-d"></div><div class="tp-d"></div><div class="tp-d"></div></div><div id="${id}-st" style="font-family:var(--mono);font-size:9px;color:var(--t2);margin-top:5px;letter-spacing:.5px"></div></div>`;
   const msgs=document.getElementById('chatMsgs');msgs.appendChild(el);msgs.scrollTop=msgs.scrollHeight;
+  let i=0;
+  const iv=setInterval(()=>{const s=document.getElementById(id+'-st');if(s&&i<STEPS.length){s.textContent='// '+STEPS[i++];}else clearInterval(iv);},1800);
   return id;
 }
 function removeTyping(id){document.getElementById(id)?.remove()}
