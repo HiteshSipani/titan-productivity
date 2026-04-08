@@ -5,7 +5,9 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from google.adk.agents import Agent
+from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset, StdioConnectionParams, StdioServerParameters
 from google.adk.tools.tool_context import ToolContext
+from google.genai.types import SpeechConfig, VoiceConfig, PrebuiltVoiceConfig, GenerateContentConfig
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 model_name = os.getenv("MODEL", "gemini-2.0-flash")
@@ -56,11 +58,149 @@ def init_db():
             pattern_data TEXT,
             observed_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS people (
+            person_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            relationship TEXT DEFAULT 'contact',
+            company TEXT,
+            last_interaction TEXT,
+            notes TEXT,
+            follow_up TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS habits (
+            habit_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            frequency TEXT DEFAULT 'daily',
+            last_done TEXT,
+            streak INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS weekly_goals (
+            goal_id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            status TEXT DEFAULT 'active',
+            week_start TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
     """)
     conn.commit()
     conn.close()
 
 init_db()
+
+# ============================================================
+# DEMO SEED DATA — runs on every fresh container
+# ============================================================
+
+def seed_demo_data():
+    """Seed realistic demo data if database is empty."""
+    conn = get_db()
+    task_count = dict(conn.execute("SELECT COUNT(*) as c FROM tasks").fetchone())["c"]
+    if task_count > 0:
+        conn.close()
+        return
+
+    now = datetime.now()
+
+    tasks = [
+        ("t001", "Prepare Q2 strategy presentation", "Slides for leadership review", "high",
+         now.strftime("%Y-%m-%d") + " 17:00", "Strategy", 120),
+        ("t002", "Review product roadmap with team", None, "high",
+         now.strftime("%Y-%m-%d") + " 15:00", "Product", 60),
+        ("t003", "Send weekly status update to manager", None, "medium",
+         now.strftime("%Y-%m-%d") + " 18:00", "Communication", 30),
+        ("t004", "Follow up with Rahul on API integration", None, "medium",
+         (now + timedelta(days=1)).strftime("%Y-%m-%d") + " 12:00", "Engineering", 45),
+        ("t005", "Review Q1 OKR completion report", None, "low",
+         (now + timedelta(days=2)).strftime("%Y-%m-%d") + " 17:00", "Planning", 90),
+    ]
+    for t in tasks:
+        conn.execute("INSERT OR IGNORE INTO tasks (task_id, title, description, priority, due_date, project, estimated_minutes) VALUES (?,?,?,?,?,?,?)", t)
+
+    notes = [
+        ("n001", "Q2 Strategy Meeting Notes",
+         "Discussed expansion into APAC market. Key decision: prioritize Singapore and Australia. Rahul to lead technical assessment. Budget approved: $500K. Next review in 2 weeks.",
+         "meeting", "strategy,Q2,APAC"),
+        ("n002", "Product Roadmap Ideas",
+         "Voice interface for mobile app. AI-powered conflict detection. AlloyDB integration for semantic search. Real-time collaboration features.",
+         "idea", "product,roadmap"),
+        ("n003", "1:1 with Manager - Key Takeaways",
+         "Focus on delivery speed this quarter. Manager wants weekly updates every Friday. Stretch goal: ship 3 features by end of month. Promotion review in Q3.",
+         "meeting", "manager,career"),
+        ("n004", "System Architecture Reference",
+         "ADK multi-agent pattern: orchestrator routes to sub-agents. Each agent has specific tools. MCP for external integrations. SQLite for local, AlloyDB for production.",
+         "reference", "architecture,ADK"),
+        ("n005", "Personal Goals This Quarter",
+         "Read 2 books on system design. Exercise 4x per week. Call parents every Sunday. Learn Spanish 15 mins daily.",
+         "personal", "goals,personal"),
+    ]
+    for n in notes:
+        conn.execute("INSERT OR IGNORE INTO notes (note_id, title, content, category, tags) VALUES (?,?,?,?,?)", n)
+
+    people = [
+        ("p001", "Rahul Sharma", "work", "TechCorp",
+         (now - timedelta(days=3)).strftime("%Y-%m-%d"),
+         "Engineering lead. Prefers concise technical updates. Working on API integration.",
+         "Follow up on API integration timeline"),
+        ("p002", "Priya Mehta", "work", "TechCorp",
+         (now - timedelta(days=1)).strftime("%Y-%m-%d"),
+         "Product manager. Very detail-oriented. Likes visual roadmaps.",
+         None),
+        ("p003", "Arjun Kapoor", "personal", None,
+         (now - timedelta(days=21)).strftime("%Y-%m-%d"),
+         "College friend. Lives in Mumbai. Been meaning to catch up.",
+         "Call this weekend"),
+        ("p004", "Sarah Chen", "work", "PartnerCo",
+         (now - timedelta(days=7)).strftime("%Y-%m-%d"),
+         "Business development contact. Interested in partnership proposal.",
+         "Send partnership deck by end of week"),
+    ]
+    for p in people:
+        conn.execute("INSERT OR IGNORE INTO people (person_id, name, relationship, company, last_interaction, notes, follow_up) VALUES (?,?,?,?,?,?,?)", p)
+
+    habits = [
+        ("h001", "Drink water", "daily", None, 0),
+        ("h002", "Exercise", "daily", None, 0),
+        ("h003", "Read for 20 mins", "daily",
+         (now - timedelta(days=1)).strftime("%Y-%m-%d"), 3),
+        ("h004", "Call parents", "weekly", None, 0),
+    ]
+    for h in habits:
+        conn.execute("INSERT OR IGNORE INTO habits (habit_id, name, frequency, last_done, streak) VALUES (?,?,?,?,?)", h)
+
+    week_start = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
+    goals = [
+        ("g001", "Ship Q2 strategy presentation", "active", week_start),
+        ("g002", "Complete API integration review with Rahul", "active", week_start),
+        ("g003", "Exercise at least 3 times", "active", week_start),
+    ]
+    for g in goals:
+        conn.execute("INSERT OR IGNORE INTO weekly_goals (goal_id, title, status, week_start) VALUES (?,?,?,?)", g)
+
+    conn.commit()
+    conn.close()
+
+
+
+def get_current_time_str():
+    """Returns current IST time dynamically."""
+    from datetime import timezone, timedelta
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now = datetime.now(ist)
+    return now.strftime("%A, %B %d, %Y at %I:%M %p IST")
+
+def get_current_datetime() -> dict:
+    """Get the real current date and time in IST. Always call this when user asks about time or current date."""
+    from datetime import timezone, timedelta
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now = datetime.now(ist)
+    return {
+        "current_time": now.strftime("%I:%M %p"),
+        "current_date": now.strftime("%A, %B %d, %Y"),
+        "timezone": "IST (UTC+5:30)",
+        "iso": now.isoformat()
+    }
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
@@ -68,6 +208,8 @@ def get_db():
     return conn
 
 import uuid
+
+seed_demo_data()
 
 def create_task(title: str, priority: str = "medium", due_date: str = None, description: str = None, project: str = None, estimated_minutes: int = 60, force_create: bool = False) -> dict:
     """Creates a new task. Priority: low/medium/high. due_date format: YYYY-MM-DD HH:MM. Set force_create=True to skip duplicate check."""
@@ -301,7 +443,7 @@ task_agent = Agent(
     Always confirm action and mention task_id when creating.
     If high priority, acknowledge with urgency.
     """,
-    tools=[create_task, get_tasks, update_task_status, get_tasks_due_today, update_task_due_date]
+    tools=[create_task, get_tasks, update_task_status, get_tasks_due_today, update_task_due_date,get_current_datetime]
 )
 
 notes_agent = Agent(
@@ -315,7 +457,7 @@ notes_agent = Agent(
     Suggest good categories: meeting, idea, reference, personal, work, learning.
     When saving meeting notes, always use the meeting name as the title.
     """,
-    tools=[save_note, search_notes, get_recent_notes]
+    tools=[save_note, search_notes, get_recent_notes,get_current_datetime]
 )
 
 reminder_agent = Agent(
@@ -330,7 +472,7 @@ reminder_agent = Agent(
     Current time: """ + datetime.now().strftime("%Y-%m-%d %H:%M") + """
     If user says "in 30 minutes", calculate the actual datetime.
     """,
-    tools=[create_reminder, get_upcoming_reminders]
+    tools=[create_reminder, get_upcoming_reminders,get_current_datetime]
 )
 
 # GOOGLE CALENDAR TOOLS (via API)
@@ -607,11 +749,29 @@ planner_agent = Agent(
     You are the Intelligence Planner for Titan — the most powerful agent.
 
     MORNING BRIEFING (triggered by "good morning" or "plan my day"):
-    - Call get_morning_briefing_data for tasks and reminders
-    - Call get_todays_calendar_events for real calendar events
-    - Present: Focus Score, calendar events, tasks due today, overdue items, reminders
-    - Detect conflicts between tasks and calendar events
-    - Offer to schedule focus blocks
+    ALWAYS call ALL of these in sequence:
+    1. get_morning_briefing_data — tasks, reminders, focus score
+    2. get_todays_calendar_events — real calendar
+    3. get_relationship_health — who needs attention
+    4. get_wellness_summary — habit status and nudges
+    5. get_pending_followups — outstanding commitments
+    6. detect_scheduling_conflicts — proactive conflict warning
+
+    THEN present a complete briefing:
+    - Focus Score with explanation
+    - Calendar events for today
+    - Tasks due today (HIGH priority first)
+    - Overdue items with urgency
+    - PROACTIVE RELATIONSHIP ALERT: "You haven't contacted [name] in [X] days — want me to add a reminder?"
+    - PROACTIVE FOLLOW-UP ALERT: "You have [X] pending follow-ups — [name]: [what]"
+    - PROACTIVE HABIT ALERT: "Your [habit] streak is at risk today"
+    - 1 specific wellness nudge based on time of day
+    - If meetings today → offer meeting prep brief
+    - Offer to schedule focus blocks for high priority tasks
+
+    BE PROACTIVE — don't wait to be asked. Surface insights the user didn't know to ask for.
+    FLAG RISKS before they become problems.
+    CONNECT THE DOTS — if Rahul has a follow-up AND a task about API integration, mention both together.
 
     CONFLICT DETECTION:
     - Call get_todays_calendar_events to get real calendar
@@ -686,13 +846,358 @@ planner_agent = Agent(
         link_event_to_task,
         create_task_from_event,
         delete_calendar_event,
-        update_calendar_event
+        update_calendar_event,
+        get_current_datetime
     ]
+)
+
+
+# ============================================================
+# PEOPLE & RELATIONSHIP TOOLS
+# ============================================================
+
+def add_person(name: str, relationship: str = "contact", company: str = None, notes: str = None) -> dict:
+    """Add or update a person in the relationship tracker."""
+    conn = get_db()
+    existing = conn.execute("SELECT * FROM people WHERE LOWER(name) LIKE ?", (f"%{name.lower()}%",)).fetchone()
+    if existing:
+        conn.execute("UPDATE people SET relationship=?, company=?, notes=?, last_interaction=? WHERE person_id=?",
+            (relationship, company or dict(existing)["company"], notes or dict(existing)["notes"],
+             datetime.now().strftime("%Y-%m-%d"), dict(existing)["person_id"]))
+        conn.commit()
+        conn.close()
+        return {"status": "updated", "message": f"Updated {name} in your network"}
+    person_id = str(uuid.uuid4())[:8]
+    conn.execute("INSERT INTO people (person_id, name, relationship, company, notes, last_interaction) VALUES (?,?,?,?,?,?)",
+        (person_id, name, relationship, company, notes, datetime.now().strftime("%Y-%m-%d")))
+    conn.commit()
+    conn.close()
+    return {"status": "success", "person_id": person_id, "message": f"{name} added to your network as {relationship}"}
+
+def get_person(name: str) -> dict:
+    """Get information about a person from your network."""
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM people WHERE LOWER(name) LIKE ?", (f"%{name.lower()}%",)).fetchall()
+    conn.close()
+    if not rows:
+        return {"status": "not_found", "message": f"No one named {name} found in your network"}
+    people = [dict(r) for r in rows]
+    return {"status": "success", "people": people, "count": len(people)}
+
+def log_interaction(name: str, interaction_notes: str, follow_up: str = None) -> dict:
+    """Log an interaction with someone and optionally set a follow-up."""
+    conn = get_db()
+    existing = conn.execute("SELECT * FROM people WHERE LOWER(name) LIKE ?", (f"%{name.lower()}%",)).fetchone()
+    if not existing:
+        conn.close()
+        return {"status": "not_found", "message": f"Add {name} to your network first"}
+    p = dict(existing)
+    updated_notes = (p["notes"] or "") + f"\n[{datetime.now().strftime('%Y-%m-%d')}] {interaction_notes}"
+    conn.execute("UPDATE people SET last_interaction=?, notes=?, follow_up=? WHERE person_id=?",
+        (datetime.now().strftime("%Y-%m-%d"), updated_notes, follow_up, p["person_id"]))
+    conn.commit()
+    conn.close()
+    return {"status": "success", "message": f"Interaction with {name} logged", "follow_up": follow_up}
+
+def get_relationship_health() -> dict:
+    """Check relationship health — who you haven't talked to recently."""
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM people ORDER BY last_interaction ASC").fetchall()
+    conn.close()
+    people = [dict(r) for r in rows]
+    now = datetime.now()
+    neglected = []
+    healthy = []
+    for p in people:
+        if p["last_interaction"]:
+            last = datetime.strptime(p["last_interaction"], "%Y-%m-%d")
+            days_ago = (now - last).days
+            p["days_since_contact"] = days_ago
+            if days_ago > 14:
+                neglected.append(p)
+            else:
+                healthy.append(p)
+    return {
+        "status": "success",
+        "neglected_relationships": neglected[:5],
+        "healthy_relationships": healthy[:5],
+        "total_in_network": len(people),
+        "nudge": f"You have {len(neglected)} relationship(s) that need attention" if neglected else "Your relationships are healthy!"
+    }
+
+def get_pending_followups() -> dict:
+    """Get all pending follow-ups with people."""
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM people WHERE follow_up IS NOT NULL AND follow_up != ''").fetchall()
+    conn.close()
+    return {"status": "success", "follow_ups": [dict(r) for r in rows], "count": len(rows)}
+
+# ============================================================
+# WELLNESS & HABIT TOOLS
+# ============================================================
+
+def add_habit(name: str, frequency: str = "daily") -> dict:
+    """Add a new habit to track."""
+    conn = get_db()
+    existing = conn.execute("SELECT * FROM habits WHERE LOWER(name) LIKE ?", (f"%{name.lower()}%",)).fetchone()
+    if existing:
+        conn.close()
+        return {"status": "exists", "message": f"Habit '{name}' already being tracked"}
+    habit_id = str(uuid.uuid4())[:8]
+    conn.execute("INSERT INTO habits (habit_id, name, frequency) VALUES (?,?,?)", (habit_id, name, frequency))
+    conn.commit()
+    conn.close()
+    return {"status": "success", "habit_id": habit_id, "message": f"Now tracking habit: {name} ({frequency})"}
+
+def log_habit(name: str) -> dict:
+    """Mark a habit as done today."""
+    conn = get_db()
+    existing = conn.execute("SELECT * FROM habits WHERE LOWER(name) LIKE ?", (f"%{name.lower()}%",)).fetchone()
+    if not existing:
+        conn.close()
+        return {"status": "not_found", "message": f"Habit '{name}' not found. Add it first."}
+    h = dict(existing)
+    today = datetime.now().strftime("%Y-%m-%d")
+    new_streak = h["streak"] + 1 if h["last_done"] == (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d") else 1
+    conn.execute("UPDATE habits SET last_done=?, streak=? WHERE habit_id=?", (today, new_streak, h["habit_id"]))
+    conn.commit()
+    conn.close()
+    return {"status": "success", "message": f"Habit '{name}' logged! Streak: {new_streak} day(s) 🔥"}
+
+def get_wellness_summary() -> dict:
+    """Get today's wellness summary — habits, streaks, and nudges."""
+    conn = get_db()
+    habits = [dict(r) for r in conn.execute("SELECT * FROM habits").fetchall()]
+    conn.close()
+    today = datetime.now().strftime("%Y-%m-%d")
+    done_today = [h for h in habits if h["last_done"] == today]
+    pending = [h for h in habits if h["last_done"] != today]
+    hour = datetime.now().hour
+    nudges = []
+    if hour >= 13 and hour <= 15:
+        nudges.append("🍽️ Have you had lunch? Don't skip meals!")
+    if hour >= 10:
+        nudges.append("💧 Time to drink water — stay hydrated!")
+    if hour >= 20:
+        nudges.append("📵 Consider winding down screens before bed")
+    if datetime.now().weekday() == 6:
+        nudges.append("👨‍👩‍👧 It's Sunday — great time to call family!")
+    if datetime.now().weekday() == 4 and hour >= 17:
+        nudges.append("🧹 Friday evening — good time to clean up your digital workspace!")
+    return {
+        "status": "success",
+        "habits_done_today": done_today,
+        "habits_pending": pending,
+        "nudges": nudges,
+        "wellness_score": int((len(done_today) / max(len(habits), 1)) * 100) if habits else 100
+    }
+
+# ============================================================
+# WEEKLY & MONTHLY INTELLIGENCE TOOLS
+# ============================================================
+
+def get_weeks_calendar_events() -> dict:
+    """Get all calendar events for the current week grouped by day."""
+    service = get_calendar_service()
+    if not service:
+        return {"status": "not_authenticated", "message": "Calendar not connected.", "events_by_day": {}}
+    now = datetime.now()
+    week_start = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=now.weekday())
+    week_end = week_start + timedelta(days=7)
+    events_result = service.events().list(
+        calendarId="primary",
+        timeMin=week_start.isoformat() + "+05:30",
+        timeMax=week_end.isoformat() + "+05:30",
+        singleEvents=True,
+        orderBy="startTime"
+    ).execute()
+    events = events_result.get("items", [])
+    by_day = {}
+    for e in events:
+        start = e["start"].get("dateTime", e["start"].get("date", ""))
+        end = e["end"].get("dateTime", e["end"].get("date", ""))
+        day = datetime.fromisoformat(start[:10]).strftime("%A %b %d") if start else "Unknown"
+        if day not in by_day:
+            by_day[day] = []
+        by_day[day].append({"title": e.get("summary", "Untitled"), "start": start, "end": end, "id": e.get("id")})
+    return {
+        "status": "success",
+        "week_start": week_start.strftime("%Y-%m-%d"),
+        "week_end": week_end.strftime("%Y-%m-%d"),
+        "events_by_day": by_day,
+        "total_events": len(events),
+        "busiest_day": max(by_day, key=lambda d: len(by_day[d])) if by_day else "No events",
+        "free_days": [d for d in ["Monday","Tuesday","Wednesday","Thursday","Friday"] if not any(d in k for k in by_day)]
+    }
+
+def get_meeting_prep_brief(meeting_title: str) -> dict:
+    """Get a preparation brief for an upcoming meeting — pulls related notes and people."""
+    conn = get_db()
+    keywords = [w for w in meeting_title.lower().split() if len(w) > 3]
+    related_notes = []
+    related_people = []
+    for kw in keywords:
+        notes = conn.execute("SELECT * FROM notes WHERE LOWER(title) LIKE ? OR LOWER(content) LIKE ? ORDER BY created_at DESC LIMIT 3",
+            (f"%{kw}%", f"%{kw}%")).fetchall()
+        people = conn.execute("SELECT * FROM people WHERE LOWER(name) LIKE ? OR LOWER(notes) LIKE ?",
+            (f"%{kw}%", f"%{kw}%")).fetchall()
+        for n in notes:
+            d = dict(n)
+            if d["note_id"] not in [x["note_id"] for x in related_notes]:
+                related_notes.append(d)
+        for p in people:
+            d = dict(p)
+            if d["person_id"] not in [x["person_id"] for x in related_people]:
+                related_people.append(d)
+    conn.close()
+    return {
+        "status": "success",
+        "meeting": meeting_title,
+        "related_notes": related_notes[:3],
+        "related_people": related_people[:3],
+        "prep_summary": f"Found {len(related_notes)} related note(s) and {len(related_people)} known attendee(s)",
+        "tip": "Review your notes before the meeting and check any pending follow-ups with attendees"
+    }
+
+def set_weekly_goal(title: str) -> dict:
+    """Set a goal for this week."""
+    conn = get_db()
+    goal_id = str(uuid.uuid4())[:8]
+    week_start = (datetime.now() - timedelta(days=datetime.now().weekday())).strftime("%Y-%m-%d")
+    conn.execute("INSERT INTO weekly_goals (goal_id, title, week_start) VALUES (?,?,?)", (goal_id, title, week_start))
+    conn.commit()
+    conn.close()
+    return {"status": "success", "goal_id": goal_id, "message": f"Weekly goal set: {title}"}
+
+def get_weekly_goals() -> dict:
+    """Get this week's goals."""
+    conn = get_db()
+    week_start = (datetime.now() - timedelta(days=datetime.now().weekday())).strftime("%Y-%m-%d")
+    rows = conn.execute("SELECT * FROM weekly_goals WHERE week_start = ?", (week_start,)).fetchall()
+    conn.close()
+    return {"status": "success", "goals": [dict(r) for r in rows], "count": len(rows)}
+
+# ============================================================
+# WELLNESS AGENT
+# ============================================================
+wellness_agent = Agent(
+    name="wellness_agent",
+    model=model_name,
+    description="Tracks habits, wellness nudges, hydration, food, digital hygiene, and work-life balance.",
+    instruction=f"""
+    Today is {datetime.now().strftime("%A, %B %d, %Y")}. Time: {datetime.now().strftime("%I:%M %p")} IST.
+    You are Titan's Wellness Guardian.
+
+    HABIT TRACKING:
+    - Add habits: add_habit (name, frequency)
+    - Log completion: log_habit (name)
+    - Review: get_wellness_summary
+
+    NUDGE PHILOSOPHY:
+    - Be warm, not preachy. One nudge at a time.
+    - Celebrate streaks enthusiastically
+    - Suggest specific actions: "Drink a glass of water now" not "stay hydrated"
+    - Digital hygiene suggestions: clear downloads, empty trash, unsubscribe emails, delete old screenshots
+    - Social health: suggest calling family on weekends, checking in with friends
+    - Physical health: lunch reminders, water, stretching after long work sessions
+
+    Always get_wellness_summary first to know what's already done today.
+    """,
+    tools=[add_habit, log_habit, get_wellness_summary, create_reminder,get_current_datetime]
+)
+
+# ============================================================
+# PEOPLE AGENT
+# ============================================================
+people_agent = Agent(
+    name="people_agent",
+    model=model_name,
+    description="Tracks relationships, logs interactions, manages follow-ups, and monitors relationship health.",
+    instruction=f"""
+    Today is {datetime.now().strftime("%A, %B %d, %Y")}. Time: {datetime.now().strftime("%I:%M %p")} IST.
+    You are Titan's Relationship Intelligence layer.
+
+    PEOPLE TRACKING:
+    - Add someone: add_person (name, relationship, company, notes)
+    - Get info: get_person (name)
+    - Log interaction: log_interaction (name, notes, follow_up)
+    - Health check: get_relationship_health
+    - Follow-ups: get_pending_followups
+
+    RELATIONSHIP TYPES: work, personal, family, mentor, client, friend, acquaintance
+
+    PROACTIVE BEHAVIOR:
+    - When user mentions a name in any context, check if they're in the network
+    - After logging interactions, always ask if there are follow-up commitments
+    - Surface neglected relationships proactively during morning briefings
+    - Track promises made: "I'll send you the report by Friday"
+    - Map org relationships: who reports to whom, who influences whom
+
+    Always be specific about relationship context — not just "contact" but "client at Acme Corp, met at conference".
+    """,
+    tools=[add_person, get_person, log_interaction, get_relationship_health, get_pending_followups, search_notes,get_current_datetime]
+)
+
+# ============================================================
+# BRIEF AGENT
+# ============================================================
+brief_agent = Agent(
+    name="brief_agent",
+    model=model_name,
+    description="Generates meeting prep briefs, weekly summaries, monthly reviews, and manager updates.",
+    instruction=f"""
+    Today is {datetime.now().strftime("%A, %B %d, %Y")}. Time: {datetime.now().strftime("%I:%M %p")} IST.
+    You are Titan's Intelligence Briefing system.
+
+    MEETING PREP (triggered by "prepare for", "brief me on", "what do I know about [meeting]"):
+    - Call get_meeting_prep_brief with meeting title
+    - Pull related notes, people, previous decisions
+    - Format as: Context, Key People, Previous Discussions, Action Items to Review, Suggested talking points
+
+    WEEKLY SUMMARY (triggered by "how was my week", "weekly review"):
+    - Call get_weeks_calendar_events for meeting overview
+    - Call analyze_weekly_patterns for task completion
+    - Call get_relationship_health for people check
+    - Call get_wellness_summary for habits
+    - Format as: Wins, Misses, Relationships, Wellness, Next Week Focus
+
+    MONTHLY REVIEW (triggered by "monthly review", "how was this month"):
+    - Analyze patterns across tasks, meetings, relationships
+    - Identify recurring blockers and wins
+    - Suggest one habit to add and one commitment to drop
+
+    MANAGER UPDATE (triggered by "write my weekly update", "status update"):
+    - Pull completed tasks from get_tasks
+    - Pull meetings from get_weeks_calendar_events
+    - Format as professional bullet-point update
+
+    NEXT WEEK PLANNING (triggered by "how does next week look", "plan next week"):
+    - Call get_weeks_calendar_events
+    - Identify free slots and busy days
+    - Suggest optimal times for deep work, meetings, and rest
+    - Flag any overcommitment risks
+
+    Always synthesize across multiple data sources for rich, contextual briefs.
+    """,
+    tools=[get_meeting_prep_brief, get_weeks_calendar_events, analyze_weekly_patterns,
+           get_relationship_health, get_wellness_summary, get_tasks, search_notes,
+           get_weekly_goals, set_weekly_goal,get_current_datetime]
+)
+
+
+# MCP Toolset — Notes server exposed via MCP protocol
+notes_mcp_toolset = MCPToolset(
+    connection_params=StdioConnectionParams(
+        server_params=StdioServerParameters(
+            command="python3",
+            args=[str(Path(__file__).parent / "notes_mcp_server.py")]
+        )
+    )
 )
 
 root_agent = Agent(
     name="titan_orchestrator",
-    model=model_name,
+    model="gemini-2.5-flash",
     description="Titan — your personal AI productivity operating system.",
     instruction="""
     Today\'s date is {datetime.now().strftime("%A, %B %d, %Y")}. Current time is {datetime.now().strftime("%I:%M %p")} IST.
@@ -704,7 +1209,10 @@ root_agent = Agent(
     → task_agent: tasks, todos, deadlines, projects
     → notes_agent: saving or finding notes and information
     → reminder_agent: time-based reminders and alerts
-    → planner_agent: day planning, morning briefing, conflicts, focus time, weekly review
+    → planner_agent: day planning, morning briefing, conflicts, focus time, calendar events
+    → wellness_agent: habits, water, food, exercise, digital hygiene, work-life balance, streaks
+    → people_agent: relationships, contacts, interactions, follow-ups, network health
+    → brief_agent: meeting prep, weekly summary, monthly review, manager updates, next week planning
 
     WHEN ASKED "what can you do" or "how can you help" or similar capability questions:
     ALWAYS respond with EXACTLY this text — each feature on its own line:
@@ -732,8 +1240,15 @@ root_agent = Agent(
     - Always greet user warmly on first message
 
     You are Titan. Make their day effortless.
+    
+    PROACTIVE RULES:
+    - If user mentions a person's name, route to people_agent to check their profile
+    - If user creates a task with a deadline, offer to schedule a focus block
+    - If user asks what to work on, check both tasks AND relationship follow-ups
+    - Never just answer — always add one proactive insight the user didn't ask for
     """,
-    sub_agents=[task_agent, notes_agent, reminder_agent, planner_agent]
+    tools=[get_current_datetime],
+    sub_agents=[task_agent, notes_agent, reminder_agent, planner_agent, wellness_agent, people_agent, brief_agent]
 )
 
 # ============================================================
